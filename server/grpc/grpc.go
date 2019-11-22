@@ -371,6 +371,9 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 				statusDesc = appErr.Error()
 			} else {
 				statusCode = convertCode(appErr)
+				if statusCode == codes.Unknown {
+					return appErr
+				}
 				statusDesc = appErr.Error()
 			}
 			return status.New(statusCode, statusDesc).Err()
@@ -427,6 +430,9 @@ func (g *grpcServer) processStream(stream grpc.ServerStream, service *service, m
 			statusDesc = appErr.Error()
 		} else {
 			statusCode = convertCode(appErr)
+			if statusCode == codes.Unknown {
+				return appErr
+			}
 			statusDesc = appErr.Error()
 		}
 	}
