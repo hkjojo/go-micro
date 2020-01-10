@@ -22,7 +22,7 @@ func microError(err error) error {
 		if e := errors.Parse(s.Message()); e.Code > 0 {
 			return e // actually a micro error
 		}
-		return errors.InternalServerError("go.micro.client", s.Message())
+		//return errors.InternalServerError("go.micro.client", s.Message())
 	}
 
 	// do nothing
