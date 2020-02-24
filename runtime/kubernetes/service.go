@@ -1,12 +1,14 @@
 package kubernetes
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
-	"github.com/micro/go-micro/runtime"
-	"github.com/micro/go-micro/runtime/kubernetes/client"
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/runtime"
+	"github.com/micro/go-micro/v2/util/kubernetes/api"
+	"github.com/micro/go-micro/v2/util/kubernetes/client"
+	"github.com/micro/go-micro/v2/util/log"
 )
 
 type service struct {
@@ -18,6 +20,12 @@ type service struct {
 	kdeploy *client.Deployment
 }
 
+func parseError(err error) *api.Status {
+	status := new(api.Status)
+	json.Unmarshal([]byte(err.Error()), &status)
+	return status
+}
+
 func newService(s *runtime.Service, c runtime.CreateOptions) *service {
 	// use pre-formatted name/version
 	name := client.Format(s.Name)
@@ -25,6 +33,14 @@ func newService(s *runtime.Service, c runtime.CreateOptions) *service {
 
 	kservice := client.NewService(name, version, c.Type)
 	kdeploy := client.NewDeployment(name, version, c.Type)
+
+	if len(s.Source) > 0 {
+		for i := range kdeploy.Spec.Template.PodSpec.Containers {
+			kdeploy.Spec.Template.PodSpec.Containers[i].Image = s.Source
+			kdeploy.Spec.Template.PodSpec.Containers[i].Command = []string{}
+			kdeploy.Spec.Template.PodSpec.Containers[i].Args = []string{name}
+		}
+	}
 
 	// attach our values to the deployment; name, version, source
 	kdeploy.Metadata.Annotations["name"] = s.Name
@@ -56,9 +72,6 @@ func newService(s *runtime.Service, c runtime.CreateOptions) *service {
 	// specify the command to exec
 	if len(c.Command) > 0 {
 		kdeploy.Spec.Template.PodSpec.Containers[0].Command = c.Command
-	} else if len(s.Source) > 0 {
-		// default command for our k8s service should be source
-		kdeploy.Spec.Template.PodSpec.Containers[0].Command = []string{"go", "run", s.Source}
 	}
 
 	return &service{
@@ -85,39 +98,56 @@ func serviceResource(s *client.Service) *client.Resource {
 }
 
 // Start starts the Kubernetes service. It creates new kubernetes deployment and service API objects
-func (s *service) Start(k client.Kubernetes) error {
+func (s *service) Start(k client.Client) error {
 	// create deployment first; if we fail, we dont create service
 	if err := k.Create(deploymentResource(s.kdeploy)); err != nil {
 		log.Debugf("Runtime failed to create deployment: %v", err)
+		s.Status("error", err)
+		v := parseError(err)
+		if v.Reason == "AlreadyExists" {
+			return runtime.ErrAlreadyExists
+		}
 		return err
 	}
 	// create service now that the deployment has been created
 	if err := k.Create(serviceResource(s.kservice)); err != nil {
 		log.Debugf("Runtime failed to create service: %v", err)
+		s.Status("error", err)
+		v := parseError(err)
+		if v.Reason == "AlreadyExists" {
+			return runtime.ErrAlreadyExists
+		}
 		return err
 	}
+
+	s.Status("started", nil)
 
 	return nil
 }
 
-func (s *service) Stop(k client.Kubernetes) error {
+func (s *service) Stop(k client.Client) error {
 	// first attempt to delete service
 	if err := k.Delete(serviceResource(s.kservice)); err != nil {
 		log.Debugf("Runtime failed to delete service: %v", err)
+		s.Status("error", err)
 		return err
 	}
 	// delete deployment once the service has been deleted
 	if err := k.Delete(deploymentResource(s.kdeploy)); err != nil {
 		log.Debugf("Runtime failed to delete deployment: %v", err)
+		s.Status("error", err)
 		return err
 	}
+
+	s.Status("stopped", nil)
 
 	return nil
 }
 
-func (s *service) Update(k client.Kubernetes) error {
+func (s *service) Update(k client.Client) error {
 	if err := k.Update(deploymentResource(s.kdeploy)); err != nil {
 		log.Debugf("Runtime failed to update deployment: %v", err)
+		s.Status("error", err)
 		return err
 	}
 	if err := k.Update(serviceResource(s.kservice)); err != nil {
@@ -126,4 +156,13 @@ func (s *service) Update(k client.Kubernetes) error {
 	}
 
 	return nil
+}
+
+func (s *service) Status(status string, err error) {
+	if err == nil {
+		s.Metadata["status"] = status
+		return
+	}
+	s.Metadata["status"] = "error"
+	s.Metadata["error"] = err.Error()
 }

@@ -1,10 +1,9 @@
 package router
 
 import (
-	"github.com/micro/go-micro/api/resolver"
-	"github.com/micro/go-micro/api/resolver/micro"
-	"github.com/micro/go-micro/config/cmd"
-	"github.com/micro/go-micro/registry"
+	"github.com/micro/go-micro/v2/api/resolver"
+	"github.com/micro/go-micro/v2/api/resolver/micro"
+	"github.com/micro/go-micro/v2/registry"
 )
 
 type Options struct {
@@ -19,7 +18,7 @@ type Option func(o *Options)
 func NewOptions(opts ...Option) Options {
 	options := Options{
 		Handler:  "meta",
-		Registry: *cmd.DefaultOptions().Registry,
+		Registry: registry.DefaultRegistry,
 	}
 
 	for _, o := range opts {

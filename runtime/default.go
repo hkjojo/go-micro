@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/util/log"
 )
 
 type runtime struct {
@@ -92,7 +92,7 @@ func (r *runtime) run(events <-chan Event) {
 			// check running services
 			r.RLock()
 			for _, service := range r.services {
-				if service.Running() {
+				if !service.ShouldStart() {
 					continue
 				}
 
@@ -104,7 +104,7 @@ func (r *runtime) run(events <-chan Event) {
 			}
 			r.RUnlock()
 		case service := <-r.start:
-			if service.Running() {
+			if !service.ShouldStart() {
 				continue
 			}
 			// TODO: check service error
@@ -143,7 +143,7 @@ func (r *runtime) run(events <-chan Event) {
 				}
 			}
 		case <-r.closed:
-			log.Debugf("Runtime stopped.")
+			log.Debugf("Runtime stopped")
 			return
 		}
 	}
@@ -155,7 +155,7 @@ func (r *runtime) Create(s *Service, opts ...CreateOption) error {
 	defer r.Unlock()
 
 	if _, ok := r.services[s.Name]; ok {
-		return errors.New("service already registered")
+		return errors.New("service already running")
 	}
 
 	var options CreateOptions
@@ -164,15 +164,19 @@ func (r *runtime) Create(s *Service, opts ...CreateOption) error {
 	}
 
 	if len(options.Command) == 0 {
-		return errors.New("missing exec command")
+		options.Command = []string{"go", "run", "."}
+	}
+
+	// create new service
+	service := newService(s, options)
+
+	// start the service
+	if err := service.Start(); err != nil {
+		return err
 	}
 
 	// save service
-	r.services[s.Name] = newService(s, options)
-
-	// push into start queue
-	log.Debugf("Runtime creating service %s", s.Name)
-	r.start <- r.services[s.Name]
+	r.services[s.Name] = service
 
 	return nil
 }
@@ -241,7 +245,7 @@ func (r *runtime) Delete(s *Service) error {
 	log.Debugf("Runtime deleting service %s", s.Name)
 	if s, ok := r.services[s.Name]; ok {
 		// check if running
-		if !s.Running() {
+		if s.Running() {
 			delete(r.services, s.Name)
 			return nil
 		}
@@ -286,9 +290,9 @@ func (r *runtime) Start() error {
 	r.closed = make(chan bool)
 
 	var events <-chan Event
-	if r.options.Notifier != nil {
+	if r.options.Scheduler != nil {
 		var err error
-		events, err = r.options.Notifier.Notify()
+		events, err = r.options.Scheduler.Notify()
 		if err != nil {
 			// TODO: should we bail here?
 			log.Debugf("Runtime failed to start update notifier")
@@ -323,9 +327,9 @@ func (r *runtime) Stop() error {
 			log.Debugf("Runtime stopping %s", service.Name)
 			service.Stop()
 		}
-		// stop the notifier too
-		if r.options.Notifier != nil {
-			return r.options.Notifier.Close()
+		// stop the scheduler
+		if r.options.Scheduler != nil {
+			return r.options.Scheduler.Close()
 		}
 	}
 

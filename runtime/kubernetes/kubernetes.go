@@ -3,28 +3,17 @@ package kubernetes
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/runtime"
-	"github.com/micro/go-micro/runtime/kubernetes/client"
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/runtime"
+	"github.com/micro/go-micro/v2/util/kubernetes/client"
+	"github.com/micro/go-micro/v2/util/log"
 )
 
 // action to take on runtime service
 type action int
-
-const (
-	start action = iota
-	update
-	stop
-)
-
-// task is queued into runtime queue
-type task struct {
-	action  action
-	service *service
-}
 
 type kubernetes struct {
 	sync.RWMutex
@@ -32,12 +21,10 @@ type kubernetes struct {
 	options runtime.Options
 	// indicates if we're running
 	running bool
-	// task queue for kubernetes services
-	queue chan *task
 	// used to stop the runtime
 	closed chan bool
 	// client is kubernetes client
-	client client.Kubernetes
+	client client.Client
 }
 
 // getService queries kubernetes for micro service
@@ -122,7 +109,18 @@ func (k *kubernetes) getService(labels map[string]string) ([]*runtime.Service, e
 
 			// parse out deployment status and inject into service metadata
 			if len(kdep.Status.Conditions) > 0 {
-				status := kdep.Status.Conditions[0].Type
+				var status string
+				switch kdep.Status.Conditions[0].Type {
+				case "Available":
+					status = "running"
+					delete(svc.Metadata, "error")
+				case "Progressing":
+					status = "starting"
+					delete(svc.Metadata, "error")
+				default:
+					status = "error"
+					svc.Metadata["error"] = kdep.Status.Conditions[0].Message
+				}
 				// pick the last known condition type and mark the service status with it
 				log.Debugf("Runtime setting %s service deployment status: %v", name, status)
 				svc.Metadata["status"] = status
@@ -163,30 +161,6 @@ func (k *kubernetes) run(events <-chan runtime.Event) {
 		case <-t.C:
 			// TODO: figure out what to do here
 			// - do we even need the ticker for k8s services?
-		case task := <-k.queue:
-			// The task queue is used to take actions e.g (CRUD - R)
-			switch task.action {
-			case start:
-				log.Debugf("Runtime starting new service: %s", task.service.Name)
-				if err := task.service.Start(k.client); err != nil {
-					log.Debugf("Runtime failed to start service %s: %v", task.service.Name, err)
-					continue
-				}
-			case stop:
-				log.Debugf("Runtime stopping service: %s", task.service.Name)
-				if err := task.service.Stop(k.client); err != nil {
-					log.Debugf("Runtime failed to stop service %s: %v", task.service.Name, err)
-					continue
-				}
-			case update:
-				log.Debugf("Runtime updating service: %s", task.service.Name)
-				if err := task.service.Update(k.client); err != nil {
-					log.Debugf("Runtime failed to update service %s: %v", task.service.Name, err)
-					continue
-				}
-			default:
-				log.Debugf("Runtime received unknown action for service: %s", task.service.Name)
-			}
 		case event := <-events:
 			// NOTE: we only handle Update events for now
 			log.Debugf("Runtime received notification event: %v", event)
@@ -272,6 +246,11 @@ func (k *kubernetes) Init(opts ...runtime.Option) error {
 		o(&k.options)
 	}
 
+	// trim the source prefix if its a git url
+	if strings.HasPrefix(k.options.Source, "github.com") {
+		k.options.Source = strings.TrimPrefix(k.options.Source, "github.com/")
+	}
+
 	return nil
 }
 
@@ -287,27 +266,18 @@ func (k *kubernetes) Create(s *runtime.Service, opts ...runtime.CreateOption) er
 		o(&options)
 	}
 
-	// quickly prevalidate the name and version
-	name := s.Name
-	if len(s.Version) > 0 {
-		name = name + "-" + s.Version
+	// hackish
+	if len(options.Type) == 0 {
+		options.Type = k.options.Type
+	}
+	if len(k.options.Source) > 0 {
+		s.Source = k.options.Source
 	}
 
-	// format as we'll format in the deployment
-	name = client.Format(name)
-
-	// create new kubernetes micro service
 	service := newService(s, options)
 
-	log.Debugf("Runtime queueing service %s version %s for start action", service.Name, service.Version)
-
-	// push into start queue
-	k.queue <- &task{
-		action:  start,
-		service: service,
-	}
-
-	return nil
+	// start the service
+	return service.Start(k.client)
 }
 
 // Read returns all instances of given service
@@ -365,15 +335,7 @@ func (k *kubernetes) Update(s *runtime.Service) error {
 	// update build time annotation
 	service.kdeploy.Spec.Template.Metadata.Annotations["build"] = time.Now().Format(time.RFC3339)
 
-	log.Debugf("Runtime queueing service %s for update action", service.Name)
-
-	// queue service for removal
-	k.queue <- &task{
-		action:  update,
-		service: service,
-	}
-
-	return nil
+	return service.Update(k.client)
 }
 
 // Delete removes a service
@@ -386,15 +348,7 @@ func (k *kubernetes) Delete(s *runtime.Service) error {
 		Type: k.options.Type,
 	})
 
-	log.Debugf("Runtime queueing service %s for delete action", service.Name)
-
-	// queue service for removal
-	k.queue <- &task{
-		action:  stop,
-		service: service,
-	}
-
-	return nil
+	return service.Stop(k.client)
 }
 
 // Start starts the runtime
@@ -412,9 +366,9 @@ func (k *kubernetes) Start() error {
 	k.closed = make(chan bool)
 
 	var events <-chan runtime.Event
-	if k.options.Notifier != nil {
+	if k.options.Scheduler != nil {
 		var err error
-		events, err = k.options.Notifier.Notify()
+		events, err = k.options.Scheduler.Notify()
 		if err != nil {
 			// TODO: should we bail here?
 			log.Debugf("Runtime failed to start update notifier")
@@ -442,9 +396,9 @@ func (k *kubernetes) Stop() error {
 		close(k.closed)
 		// set not running
 		k.running = false
-		// stop the notifier too
-		if k.options.Notifier != nil {
-			return k.options.Notifier.Close()
+		// stop the scheduler
+		if k.options.Scheduler != nil {
+			return k.options.Scheduler.Close()
 		}
 	}
 
@@ -470,12 +424,11 @@ func NewRuntime(opts ...runtime.Option) runtime.Runtime {
 	}
 
 	// kubernetes client
-	client := client.NewClientInCluster()
+	client := client.NewClusterClient()
 
 	return &kubernetes{
 		options: options,
 		closed:  make(chan bool),
-		queue:   make(chan *task, 128),
 		client:  client,
 	}
 }

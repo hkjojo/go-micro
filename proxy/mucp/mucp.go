@@ -10,24 +10,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/client"
-	"github.com/micro/go-micro/client/selector"
-	"github.com/micro/go-micro/codec"
-	"github.com/micro/go-micro/codec/bytes"
-	"github.com/micro/go-micro/config/options"
-	"github.com/micro/go-micro/errors"
-	"github.com/micro/go-micro/metadata"
-	"github.com/micro/go-micro/proxy"
-	"github.com/micro/go-micro/router"
-	"github.com/micro/go-micro/server"
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/client"
+	"github.com/micro/go-micro/v2/client/selector"
+	"github.com/micro/go-micro/v2/codec"
+	"github.com/micro/go-micro/v2/codec/bytes"
+	"github.com/micro/go-micro/v2/errors"
+	"github.com/micro/go-micro/v2/metadata"
+	"github.com/micro/go-micro/v2/proxy"
+	"github.com/micro/go-micro/v2/router"
+	"github.com/micro/go-micro/v2/server"
+	"github.com/micro/go-micro/v2/util/log"
 )
 
 // Proxy will transparently proxy requests to an endpoint.
 // If no endpoint is specified it will call a service using the client.
 type Proxy struct {
 	// embed options
-	options.Options
+	options proxy.Options
 
 	// Endpoint specifies the fixed service endpoint to call.
 	Endpoint string
@@ -204,10 +203,6 @@ func (p *Proxy) cacheRoutes(service string) ([]router.Route, error) {
 	// lookup the routes in the router
 	results, err := p.Router.Lookup(router.QueryService(service))
 	if err != nil {
-		// check the status of the router
-		if status := p.Router.Status(); status.Code == router.Error {
-			return nil, status.Error
-		}
 		// otherwise return the error
 		return nil, err
 	}
@@ -282,6 +277,7 @@ func (p *Proxy) watchRoutes() {
 	if err != nil {
 		return
 	}
+	defer w.Stop()
 
 	for {
 		event, err := w.Next()
@@ -399,7 +395,7 @@ func (p *Proxy) ServeRequest(ctx context.Context, req server.Request, rsp server
 
 		// set address if available via routes or specific endpoint
 		if len(routes) > 0 {
-			addresses := toNodes(routes)
+			addresses = toNodes(routes)
 			opts = append(opts, client.WithAddress(addresses...))
 		}
 
@@ -490,6 +486,26 @@ func (p *Proxy) serveRequest(ctx context.Context, link client.Client, service, e
 	}
 	defer stream.Close()
 
+	// if we receive a grpc stream we have to refire the initial request
+	c, ok := req.Codec().(codec.Codec)
+	if ok && c.String() == "grpc" && link.String() == "grpc" {
+		// get the header from client
+		hdr := req.Header()
+		msg := &codec.Message{
+			Type:   codec.Request,
+			Header: hdr,
+			Body:   body,
+		}
+
+		// write the raw request
+		err = stream.Request().Codec().Write(msg, nil)
+		if err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	}
+
 	// create client request read loop if streaming
 	go readLoop(req, stream)
 
@@ -522,57 +538,50 @@ func (p *Proxy) serveRequest(ctx context.Context, link client.Client, service, e
 	}
 }
 
+func (p *Proxy) String() string {
+	return "mucp"
+}
+
 // NewSingleHostProxy returns a proxy which sends requests to a single backend
 func NewSingleHostProxy(endpoint string) *Proxy {
 	return &Proxy{
-		Options:  options.NewOptions(),
 		Endpoint: endpoint,
 	}
 }
 
 // NewProxy returns a new proxy which will route based on mucp headers
-func NewProxy(opts ...options.Option) proxy.Proxy {
+func NewProxy(opts ...proxy.Option) proxy.Proxy {
+	var options proxy.Options
+	for _, o := range opts {
+		o(&options)
+	}
+
 	p := new(Proxy)
 	p.Links = map[string]client.Client{}
-	p.Options = options.NewOptions(opts...)
-	p.Options.Init(options.WithString("mucp"))
+	p.Routes = make(map[string]map[uint64]router.Route)
+	p.options = options
 
 	// get endpoint
-	ep, ok := p.Options.Values().Get("proxy.endpoint")
-	if ok {
-		p.Endpoint = ep.(string)
-	}
-
-	// get client
-	c, ok := p.Options.Values().Get("proxy.client")
-	if ok {
-		p.Client = c.(client.Client)
-	}
+	p.Endpoint = options.Endpoint
+	// set the client
+	p.Client = options.Client
+	// get router
+	p.Router = options.Router
 
 	// set the default client
 	if p.Client == nil {
 		p.Client = client.DefaultClient
 	}
 
-	// get client
-	links, ok := p.Options.Values().Get("proxy.links")
-	if ok {
-		p.Links = links.(map[string]client.Client)
-	}
-
-	// get router
-	r, ok := p.Options.Values().Get("proxy.router")
-	if ok {
-		p.Router = r.(router.Router)
-	}
-
 	// create default router and start it
 	if p.Router == nil {
 		p.Router = router.DefaultRouter
 	}
-
-	// routes cache
-	p.Routes = make(map[string]map[uint64]router.Route)
+	// set the links
+	if options.Links != nil {
+		// get client
+		p.Links = options.Links
+	}
 
 	go func() {
 		// continuously attempt to watch routes

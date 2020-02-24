@@ -8,16 +8,25 @@ type Option func(o *Options)
 
 // Options configure runtime
 type Options struct {
-	// Notifier for updates
-	Notifier Notifier
+	// Scheduler for updates
+	Scheduler Scheduler
 	// Service type to manage
 	Type string
+	// Source of the services repository
+	Source string
 }
 
-// WithNotifier specifies a notifier for updates
-func WithNotifier(n Notifier) Option {
+// WithSource sets the base image / repository
+func WithSource(src string) Option {
 	return func(o *Options) {
-		o.Notifier = n
+		o.Source = src
+	}
+}
+
+// WithScheduler specifies a scheduler for updates
+func WithScheduler(n Scheduler) Option {
+	return func(o *Options) {
+		o.Scheduler = n
 	}
 }
 
@@ -42,6 +51,8 @@ type CreateOptions struct {
 	Output io.Writer
 	// Type of service to create
 	Type string
+	// Retries before failing deploy
+	Retries int
 }
 
 // ReadOptions queries runtime services
@@ -54,11 +65,25 @@ type ReadOptions struct {
 	Type string
 }
 
+// CreateType sets the type of service to create
+func CreateType(t string) CreateOption {
+	return func(o *CreateOptions) {
+		o.Type = t
+	}
+}
+
 // WithCommand specifies the command to execute
 func WithCommand(args ...string) CreateOption {
 	return func(o *CreateOptions) {
 		// set command
 		o.Command = args
+	}
+}
+
+// WithRetries sets the max retries attemps
+func WithRetries(retries int) CreateOption {
+	return func(o *CreateOptions) {
+		o.Retries = retries
 	}
 }
 
@@ -83,7 +108,7 @@ func ReadService(service string) ReadOption {
 	}
 }
 
-// WithVersion confifgures service version
+// ReadVersion confifgures service version
 func ReadVersion(version string) ReadOption {
 	return func(o *ReadOptions) {
 		o.Version = version

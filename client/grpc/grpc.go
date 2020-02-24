@@ -9,15 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/broker"
-	"github.com/micro/go-micro/client"
-	"github.com/micro/go-micro/client/selector"
-	"github.com/micro/go-micro/codec"
-	raw "github.com/micro/go-micro/codec/bytes"
-	"github.com/micro/go-micro/errors"
-	"github.com/micro/go-micro/metadata"
-	"github.com/micro/go-micro/registry"
-	"github.com/micro/go-micro/transport"
+	"github.com/micro/go-micro/v2/broker"
+	"github.com/micro/go-micro/v2/client"
+	"github.com/micro/go-micro/v2/client/selector"
+	raw "github.com/micro/go-micro/v2/codec/bytes"
+	"github.com/micro/go-micro/v2/errors"
+	"github.com/micro/go-micro/v2/metadata"
+	"github.com/micro/go-micro/v2/registry"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -149,7 +147,7 @@ func (g *grpcClient) call(ctx context.Context, node *registry.Node, req client.R
 	case err := <-ch:
 		grr = err
 	case <-ctx.Done():
-		grr = ctx.Err()
+		grr = errors.Timeout("go.micro.client", "%v", ctx.Err())
 	}
 
 	return grr
@@ -209,11 +207,15 @@ func (g *grpcClient) stream(ctx context.Context, node *registry.Node, req client
 		ServerStreams: true,
 	}
 
-	grpcCallOptions := []grpc.CallOption{}
+	grpcCallOptions := []grpc.CallOption{grpc.CallContentSubtype(cf.Name())}
 	if opts := g.getGrpcCallOptions(); opts != nil {
 		grpcCallOptions = append(grpcCallOptions, opts...)
 	}
-	st, err := cc.NewStream(ctx, desc, methodToGRPC(req.Service(), req.Endpoint()), grpcCallOptions...)
+
+	// create a new cancelling context
+	newCtx, cancel := context.WithCancel(ctx)
+
+	st, err := cc.NewStream(newCtx, desc, methodToGRPC(req.Service(), req.Endpoint()), grpcCallOptions...)
 	if err != nil {
 		return nil, errors.InternalServerError("go.micro.client", fmt.Sprintf("Error creating stream: %v", err))
 	}
@@ -241,7 +243,30 @@ func (g *grpcClient) stream(ctx context.Context, node *registry.Node, req client
 		response: rsp,
 		stream:   st,
 		conn:     cc,
+		cancel:   cancel,
 	}, nil
+}
+
+func (g *grpcClient) poolMaxStreams() int {
+	if g.opts.Context == nil {
+		return DefaultPoolMaxStreams
+	}
+	v := g.opts.Context.Value(poolMaxStreams{})
+	if v == nil {
+		return DefaultPoolMaxStreams
+	}
+	return v.(int)
+}
+
+func (g *grpcClient) poolMaxIdle() int {
+	if g.opts.Context == nil {
+		return DefaultPoolMaxIdle
+	}
+	v := g.opts.Context.Value(poolMaxIdle{})
+	if v == nil {
+		return DefaultPoolMaxIdle
+	}
+	return v.(int)
 }
 
 func (g *grpcClient) maxRecvMsgSizeValue() int {
@@ -601,46 +626,20 @@ func (g *grpcClient) getGrpcCallOptions() []grpc.CallOption {
 }
 
 func newClient(opts ...client.Option) client.Client {
-	options := client.Options{
-		Codecs: make(map[string]codec.NewCodec),
-		CallOptions: client.CallOptions{
-			Backoff:        client.DefaultBackoff,
-			Retry:          client.DefaultRetry,
-			Retries:        client.DefaultRetries,
-			RequestTimeout: client.DefaultRequestTimeout,
-			DialTimeout:    transport.DefaultDialTimeout,
-		},
-		PoolSize: client.DefaultPoolSize,
-		PoolTTL:  client.DefaultPoolTTL,
-	}
+	options := client.NewOptions()
+	// default content type for grpc
+	options.ContentType = "application/grpc+proto"
 
 	for _, o := range opts {
 		o(&options)
 	}
 
-	if len(options.ContentType) == 0 {
-		options.ContentType = "application/grpc+proto"
-	}
-
-	if options.Broker == nil {
-		options.Broker = broker.DefaultBroker
-	}
-
-	if options.Registry == nil {
-		options.Registry = registry.DefaultRegistry
-	}
-
-	if options.Selector == nil {
-		options.Selector = selector.NewSelector(
-			selector.Registry(options.Registry),
-		)
-	}
-
 	rc := &grpcClient{
 		once: sync.Once{},
 		opts: options,
-		pool: newPool(options.PoolSize, options.PoolTTL),
 	}
+
+	rc.pool = newPool(options.PoolSize, options.PoolTTL, rc.poolMaxIdle(), rc.poolMaxStreams())
 
 	c := client.Client(rc)
 

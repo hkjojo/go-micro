@@ -2,14 +2,14 @@ package runtime
 
 import (
 	"io"
+	"strconv"
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/runtime/build"
-
-	"github.com/micro/go-micro/runtime/process"
-	proc "github.com/micro/go-micro/runtime/process/os"
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/runtime/local/build"
+	"github.com/micro/go-micro/v2/runtime/local/process"
+	proc "github.com/micro/go-micro/v2/runtime/local/process/os"
+	"github.com/micro/go-micro/v2/util/log"
 )
 
 type service struct {
@@ -19,6 +19,9 @@ type service struct {
 	closed  chan bool
 	err     error
 	updated time.Time
+
+	retries    int
+	maxRetries int
 
 	// output for logs
 	output io.Writer
@@ -55,9 +58,10 @@ func newService(s *Service, c CreateOptions) *service {
 			Env:  c.Env,
 			Args: args,
 		},
-		closed:  make(chan bool),
-		output:  c.Output,
-		updated: time.Now(),
+		closed:     make(chan bool),
+		output:     c.Output,
+		updated:    time.Now(),
+		maxRetries: c.Retries,
 	}
 }
 
@@ -66,7 +70,19 @@ func (s *service) streamOutput() {
 	go io.Copy(s.output, s.PID.Error)
 }
 
-// Running returns true is the service is running
+func (s *service) shouldStart() bool {
+	if s.running {
+		return false
+	}
+	return s.maxRetries <= s.retries
+}
+
+func (s *service) ShouldStart() bool {
+	s.RLock()
+	defer s.RUnlock()
+	return s.shouldStart()
+}
+
 func (s *service) Running() bool {
 	s.RLock()
 	defer s.RUnlock()
@@ -78,7 +94,7 @@ func (s *service) Start() error {
 	s.Lock()
 	defer s.Unlock()
 
-	if s.running {
+	if !s.shouldStart() {
 		return nil
 	}
 
@@ -86,10 +102,20 @@ func (s *service) Start() error {
 	s.err = nil
 	s.closed = make(chan bool)
 
+	if s.Metadata == nil {
+		s.Metadata = make(map[string]string)
+	}
+
+	s.Metadata["status"] = "starting"
+	// delete any existing error
+	delete(s.Metadata, "error")
+
 	// TODO: pull source & build binary
 	log.Debugf("Runtime service %s forking new process", s.Service.Name)
 	p, err := s.Process.Fork(s.Exec)
 	if err != nil {
+		s.Metadata["status"] = "error"
+		s.Metadata["error"] = err.Error()
 		return err
 	}
 
@@ -97,6 +123,8 @@ func (s *service) Start() error {
 	s.PID = p
 	// set to running
 	s.running = true
+	// set status
+	s.Metadata["status"] = "running"
 
 	if s.output != nil {
 		s.streamOutput()
@@ -122,10 +150,18 @@ func (s *service) Stop() error {
 		if s.PID == nil {
 			return nil
 		}
+
+		// set status
+		s.Metadata["status"] = "stopping"
+
 		// kill the process
 		err := s.Process.Kill(s.PID)
 		// wait for it to exit
 		s.Process.Wait(s.PID)
+
+		// set status
+		s.Metadata["status"] = "stopped"
+
 		// return the kill error
 		return err
 	}
@@ -148,7 +184,14 @@ func (s *service) Wait() {
 
 	// save the error
 	if err != nil {
+		s.retries++
+		s.Metadata["status"] = "error"
+		s.Metadata["error"] = err.Error()
+		s.Metadata["retries"] = strconv.Itoa(s.retries)
+
 		s.err = err
+	} else {
+		s.Metadata["status"] = "done"
 	}
 
 	// no longer running

@@ -14,14 +14,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/micro/cli"
-	"github.com/micro/go-micro"
-	"github.com/micro/go-micro/registry"
-	maddr "github.com/micro/go-micro/util/addr"
-	mhttp "github.com/micro/go-micro/util/http"
-	"github.com/micro/go-micro/util/log"
-	mnet "github.com/micro/go-micro/util/net"
-	mls "github.com/micro/go-micro/util/tls"
+	"github.com/micro/cli/v2"
+	"github.com/micro/go-micro/v2"
+	"github.com/micro/go-micro/v2/registry"
+	maddr "github.com/micro/go-micro/v2/util/addr"
+	mhttp "github.com/micro/go-micro/v2/util/http"
+	"github.com/micro/go-micro/v2/util/log"
+	mnet "github.com/micro/go-micro/v2/util/net"
+	mls "github.com/micro/go-micro/v2/util/tls"
 )
 
 type service struct {
@@ -123,6 +123,13 @@ func (s *service) register() error {
 	srv := s.genSrv()
 	srv.Endpoints = s.srv.Endpoints
 	s.srv = srv
+
+	// use RegisterCheck func before register
+	if err := s.opts.RegisterCheck(s.opts.Context); err != nil {
+		log.Logf("Server %s-%s register check error: %s", s.opts.Name, s.opts.Id, err)
+		return err
+	}
+
 	return r.Register(s.srv, registry.RegisterTTL(s.opts.RegisterTTL))
 }
 
@@ -320,7 +327,7 @@ func (s *service) Init(opts ...Option) error {
 		serviceOpts = append(serviceOpts, micro.Registry(s.opts.Registry))
 	}
 
-	serviceOpts = append(serviceOpts, micro.Action(func(ctx *cli.Context) {
+	serviceOpts = append(serviceOpts, micro.Action(func(ctx *cli.Context) error {
 		if ttl := ctx.Int("register_ttl"); ttl > 0 {
 			s.opts.RegisterTTL = time.Duration(ttl) * time.Second
 		}
@@ -352,6 +359,8 @@ func (s *service) Init(opts ...Option) error {
 		if s.opts.Action != nil {
 			s.opts.Action(ctx)
 		}
+
+		return nil
 	}))
 
 	s.opts.Service.Init(serviceOpts...)
@@ -376,7 +385,9 @@ func (s *service) Run() error {
 	go s.run(ex)
 
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	if s.opts.Signal {
+		signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	}
 
 	select {
 	// wait on kill signal

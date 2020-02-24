@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/micro/go-micro/network/resolver"
+	"github.com/micro/go-micro/v2/network/resolver"
 )
 
 // Resolver is a DNS network resolve
@@ -17,7 +17,7 @@ func (r *Resolver) Resolve(name string) ([]*resolver.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	records := make([]*resolver.Record, len(addrs))
+	records := make([]*resolver.Record, 0, len(addrs))
 	for _, addr := range addrs {
 		address := addr.Target
 		if addr.Port > 0 {

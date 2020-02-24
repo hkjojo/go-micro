@@ -1,17 +1,24 @@
 // Package runtime is a service runtime manager
 package runtime
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 var (
 	// DefaultRuntime is default micro runtime
 	DefaultRuntime Runtime = NewRuntime()
 	// DefaultName is default runtime service name
 	DefaultName = "go.micro.runtime"
+
+	ErrAlreadyExists = errors.New("already exists")
 )
 
 // Runtime is a service runtime manager
 type Runtime interface {
+	// String describes runtime
+	String() string
 	// Init initializes runtime
 	Init(...Option) error
 	// Create registers a service
@@ -30,15 +37,15 @@ type Runtime interface {
 	Stop() error
 }
 
-// Notifier is an update notifier
-type Notifier interface {
-	// Notify publishes notification events
+// Scheduler is a runtime service scheduler
+type Scheduler interface {
+	// Notify publishes schedule events
 	Notify() (<-chan Event, error)
-	// Close stops the notifier
+	// Close stops the scheduler
 	Close() error
 }
 
-// EventType defines notification event
+// EventType defines schedule event
 type EventType int
 
 const (

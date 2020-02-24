@@ -4,11 +4,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/micro/go-micro/broker"
-	"github.com/micro/go-micro/client/selector"
-	"github.com/micro/go-micro/codec"
-	"github.com/micro/go-micro/registry"
-	"github.com/micro/go-micro/transport"
+	"github.com/micro/go-micro/v2/broker"
+	"github.com/micro/go-micro/v2/client/selector"
+	"github.com/micro/go-micro/v2/codec"
+	"github.com/micro/go-micro/v2/registry"
+	"github.com/micro/go-micro/v2/transport"
 )
 
 type Options struct {
@@ -85,9 +85,11 @@ type RequestOptions struct {
 	Context context.Context
 }
 
-func newOptions(options ...Option) Options {
+func NewOptions(options ...Option) Options {
 	opts := Options{
-		Codecs: make(map[string]codec.NewCodec),
+		Context:     context.Background(),
+		ContentType: DefaultContentType,
+		Codecs:      make(map[string]codec.NewCodec),
 		CallOptions: CallOptions{
 			Backoff:        DefaultBackoff,
 			Retry:          DefaultRetry,
@@ -95,38 +97,16 @@ func newOptions(options ...Option) Options {
 			RequestTimeout: DefaultRequestTimeout,
 			DialTimeout:    transport.DefaultDialTimeout,
 		},
-		PoolSize: DefaultPoolSize,
-		PoolTTL:  DefaultPoolTTL,
+		PoolSize:  DefaultPoolSize,
+		PoolTTL:   DefaultPoolTTL,
+		Broker:    broker.DefaultBroker,
+		Selector:  selector.DefaultSelector,
+		Registry:  registry.DefaultRegistry,
+		Transport: transport.DefaultTransport,
 	}
 
 	for _, o := range options {
 		o(&opts)
-	}
-
-	if len(opts.ContentType) == 0 {
-		opts.ContentType = DefaultContentType
-	}
-
-	if opts.Broker == nil {
-		opts.Broker = broker.DefaultBroker
-	}
-
-	if opts.Registry == nil {
-		opts.Registry = registry.DefaultRegistry
-	}
-
-	if opts.Selector == nil {
-		opts.Selector = selector.NewSelector(
-			selector.Registry(opts.Registry),
-		)
-	}
-
-	if opts.Transport == nil {
-		opts.Transport = transport.DefaultTransport
-	}
-
-	if opts.Context == nil {
-		opts.Context = context.Background()
 	}
 
 	return opts
@@ -160,7 +140,7 @@ func PoolSize(d int) Option {
 	}
 }
 
-// PoolSize sets the connection pool size
+// PoolTTL sets the connection pool ttl
 func PoolTTL(d time.Duration) Option {
 	return func(o *Options) {
 		o.PoolTTL = d
@@ -171,6 +151,8 @@ func PoolTTL(d time.Duration) Option {
 func Registry(r registry.Registry) Option {
 	return func(o *Options) {
 		o.Registry = r
+		// set in the selector
+		o.Selector.Init(selector.Registry(r))
 	}
 }
 

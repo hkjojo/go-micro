@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/debug/profile"
+	"github.com/micro/go-micro/v2/debug/profile"
 )
 
 type profiler struct {
@@ -105,6 +105,10 @@ func (p *profiler) Stop() error {
 		p.memFile = nil
 		return nil
 	}
+}
+
+func (p *profiler) String() string {
+	return "pprof"
 }
 
 func NewProfile(opts ...profile.Option) profile.Profile {

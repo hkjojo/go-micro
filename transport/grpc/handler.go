@@ -3,10 +3,10 @@ package grpc
 import (
 	"runtime/debug"
 
-	"github.com/micro/go-micro/errors"
-	"github.com/micro/go-micro/transport"
-	pb "github.com/micro/go-micro/transport/grpc/proto"
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/errors"
+	"github.com/micro/go-micro/v2/transport"
+	pb "github.com/micro/go-micro/v2/transport/grpc/proto"
+	"github.com/micro/go-micro/v2/util/log"
 	"google.golang.org/grpc/peer"
 )
 
@@ -16,8 +16,7 @@ type microTransport struct {
 	fn   func(transport.Socket)
 }
 
-func (m *microTransport) Stream(ts pb.Transport_StreamServer) error {
-	var err error
+func (m *microTransport) Stream(ts pb.Transport_StreamServer) (err error) {
 
 	sock := &grpcTransportSocket{
 		stream: ts,

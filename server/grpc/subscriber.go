@@ -7,12 +7,12 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/micro/go-micro/broker"
-	"github.com/micro/go-micro/errors"
-	"github.com/micro/go-micro/metadata"
-	"github.com/micro/go-micro/registry"
-	"github.com/micro/go-micro/server"
-	"github.com/micro/go-micro/util/log"
+	"github.com/micro/go-micro/v2/broker"
+	"github.com/micro/go-micro/v2/errors"
+	"github.com/micro/go-micro/v2/metadata"
+	"github.com/micro/go-micro/v2/registry"
+	"github.com/micro/go-micro/v2/server"
+	"github.com/micro/go-micro/v2/util/log"
 )
 
 const (
@@ -167,8 +167,7 @@ func validateSubscriber(sub server.Subscriber) error {
 }
 
 func (g *grpcServer) createSubHandler(sb *subscriber, opts server.Options) broker.Handler {
-	return func(p broker.Event) error {
-		var err error
+	return func(p broker.Event) (err error) {
 
 		defer func() {
 			if r := recover(); r != nil {

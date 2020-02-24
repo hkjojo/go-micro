@@ -1,7 +1,7 @@
 package grpc
 
 import (
-	"github.com/micro/go-micro/errors"
+	"github.com/micro/go-micro/v2/errors"
 	"google.golang.org/grpc/status"
 )
 
@@ -12,9 +12,8 @@ func microError(err error) error {
 		return nil
 	}
 
-	// micro error
-	if v, ok := err.(*errors.Error); ok {
-		return v
+	if verr, ok := err.(*errors.Error); ok {
+		return verr
 	}
 
 	// grpc error
@@ -22,7 +21,8 @@ func microError(err error) error {
 		if e := errors.Parse(s.Message()); e.Code > 0 {
 			return e // actually a micro error
 		}
-		//return errors.InternalServerError("go.micro.client", s.Message())
+		return err
+		// return errors.InternalServerError("go.micro.client", s.Message())
 	}
 
 	// do nothing
