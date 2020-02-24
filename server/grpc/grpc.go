@@ -378,6 +378,11 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 		statusDesc := ""
 		// execute the handler
 		if appErr := fn(ctx, r, replyv.Interface()); appErr != nil {
+			// if err is status.Status, return
+			if _, ok := status.FromError(appErr); ok {
+				return appErr
+			}
+
 			var errStatus *status.Status
 			switch verr := appErr.(type) {
 			case *errors.Error:
@@ -406,6 +411,7 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 				statusCode = convertCode(verr)
 				statusDesc = verr.Error()
 				errStatus = status.New(statusCode, statusDesc)
+				return appErr
 			}
 			return errStatus.Err()
 		}
