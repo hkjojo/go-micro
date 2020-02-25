@@ -382,6 +382,11 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 		statusDesc := ""
 		// execute the handler
 		if appErr := fn(ctx, r, replyv.Interface()); appErr != nil {
+			// if err is status.Status, return
+			if _, ok := status.FromError(appErr); ok {
+				return appErr
+			}
+
 			var errStatus *status.Status
 			switch verr := appErr.(type) {
 			case *errors.Error:
@@ -395,6 +400,9 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 			case proto.Message:
 				// user defined error that proto based we can attach it to grpc status
 				statusCode = convertCode(appErr)
+				if statusCode == codes.Unknown {
+					return appErr
+				}
 				statusDesc = appErr.Error()
 				errStatus, err = status.New(statusCode, statusDesc).WithDetails(verr)
 				if err != nil {
@@ -410,6 +418,7 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 				statusCode = convertCode(verr)
 				statusDesc = verr.Error()
 				errStatus = status.New(statusCode, statusDesc)
+				return appErr
 			}
 			return errStatus.Err()
 		}
@@ -473,6 +482,9 @@ func (g *grpcServer) processStream(stream grpc.ServerStream, service *service, m
 		case proto.Message:
 			// user defined error that proto based we can attach it to grpc status
 			statusCode = convertCode(appErr)
+			if statusCode == codes.Unknown {
+				return appErr
+			}
 			statusDesc = appErr.Error()
 			errStatus, err = status.New(statusCode, statusDesc).WithDetails(verr)
 			if err != nil {
