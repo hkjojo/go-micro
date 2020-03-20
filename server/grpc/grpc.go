@@ -390,7 +390,6 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 			if _, ok := status.FromError(appErr); ok {
 				return appErr
 			}
-
 			var errStatus *status.Status
 			switch verr := appErr.(type) {
 			case *errors.Error:
@@ -466,6 +465,9 @@ func (g *grpcServer) processStream(stream grpc.ServerStream, service *service, m
 	statusDesc := ""
 
 	if appErr := fn(ctx, r, ss); appErr != nil {
+		if _, ok := status.FromError(appErr); ok {
+			return appErr
+		}
 		var err error
 		var errStatus *status.Status
 		switch verr := appErr.(type) {
