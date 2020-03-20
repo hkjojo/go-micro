@@ -15,6 +15,10 @@ import (
 
 type clientWrapper struct {
 	client.Client
+
+	// Auth interface
+	auth func() auth.Auth
+	// headers to inject
 	headers metadata.Metadata
 }
 
@@ -27,13 +31,22 @@ type traceWrapper struct {
 
 var (
 	HeaderPrefix = "Micro-"
-	BearerSchema = "Bearer "
+	BearerScheme = "Bearer "
 )
 
 func (c *clientWrapper) setHeaders(ctx context.Context) context.Context {
 	// copy metadata
 	mda, _ := metadata.FromContext(ctx)
 	md := metadata.Copy(mda)
+
+	// get auth token
+	if a := c.auth(); a != nil {
+		tk := a.Options().Token
+		// if the token if exists and auth header isn't set then set it
+		if len(tk) > 0 && len(md["Authorization"]) == 0 {
+			md["Authorization"] = BearerScheme + tk
+		}
+	}
 
 	// set headers
 	for k, v := range c.headers {
@@ -75,10 +88,11 @@ func (c *traceWrapper) Call(ctx context.Context, req client.Request, rsp interfa
 	return err
 }
 
-// FromService wraps a client to inject From-Service header into metadata
-func FromService(name string, c client.Client) client.Client {
+// FromService wraps a client to inject service and auth metadata
+func FromService(name string, c client.Client, fn func() auth.Auth) client.Client {
 	return &clientWrapper{
 		c,
+		fn,
 		metadata.Metadata{
 			HeaderPrefix + "From-Service": name,
 		},
@@ -145,20 +159,9 @@ func AuthHandler(fn func() auth.Auth) server.HandlerWrapper {
 			// get the auth.Auth interface
 			a := fn()
 
-			// Extract endpoint and remove service name prefix
-			// (e.g. Platform.ListServices => ListServices)
-			var endpoint string
-			if ec := strings.Split(req.Endpoint(), "."); len(ec) == 2 {
-				endpoint = ec[1]
-			}
-
-			// Check for endpoints excluded from auth. If the endpoint
-			// matches, execute the handler and return
-			excludes := append(a.Options().Excludes, "Stats", "Trace")
-			for _, e := range excludes {
-				if e == endpoint {
-					return h(ctx, req, rsp)
-				}
+			// Check for debug endpoints which should be excluded from auth
+			if strings.HasPrefix(req.Endpoint(), "Debug.") {
+				return h(ctx, req, rsp)
 			}
 
 			// Extract the token if present. Note: if noop is being used
@@ -166,18 +169,39 @@ func AuthHandler(fn func() auth.Auth) server.HandlerWrapper {
 			var token string
 			if header, ok := metadata.Get(ctx, "Authorization"); ok {
 				// Ensure the correct scheme is being used
-				if !strings.HasPrefix(header, BearerSchema) {
+				if !strings.HasPrefix(header, BearerScheme) {
 					return errors.Unauthorized("go.micro.auth", "invalid authorization header. expected Bearer schema")
 				}
 
-				token = header[len(BearerSchema):]
+				token = header[len(BearerScheme):]
 			}
 
-			// Validate the token
-			if _, err := a.Validate(token); err != nil {
-				return errors.Unauthorized("go.micro.auth", err.Error())
+			// Verify the token
+			account, authErr := a.Verify(token)
+
+			// If there is an account, set it in the context
+			if authErr == nil {
+				var err error
+				ctx, err = auth.ContextWithAccount(ctx, account)
+
+				if err != nil {
+					return err
+				}
 			}
 
+			// Return if the user disabled auth on this endpoint
+			for _, e := range a.Options().Exclude {
+				if e == req.Endpoint() {
+					return h(ctx, req, rsp)
+				}
+			}
+
+			// If the authErr is set, prevent the user from calling the endpoint
+			if authErr != nil {
+				return errors.Unauthorized("go.micro.auth", authErr.Error())
+			}
+
+			// The user is authorised, allow the call
 			return h(ctx, req, rsp)
 		}
 	}

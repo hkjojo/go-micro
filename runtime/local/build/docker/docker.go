@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 
 	docker "github.com/fsouza/go-dockerclient"
+	"github.com/micro/go-micro/v2/logger"
 	"github.com/micro/go-micro/v2/runtime/local/build"
-	"github.com/micro/go-micro/v2/util/log"
 )
 
 type Builder struct {
@@ -84,7 +84,7 @@ func NewBuilder(opts ...build.Option) build.Builder {
 	endpoint := "unix:///var/run/docker.sock"
 	client, err := docker.NewClient(endpoint)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 	return &Builder{
 		Options: options,

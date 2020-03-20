@@ -1,21 +1,26 @@
 package jwt
 
 import (
+	"encoding/base64"
 	"errors"
-	"time"
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/micro/go-micro/v2/auth"
 )
 
-// ErrInvalidPrivateKey is returned when the service provided an invalid private key
-var ErrInvalidPrivateKey = errors.New("An invalid private key was provided")
+var (
+	// ErrInvalidPrivateKey is returned when the service provided an invalid private key
+	ErrInvalidPrivateKey = errors.New("An invalid private key was provided")
 
-// ErrEncodingToken is returned when the service encounters an error during encoding
-var ErrEncodingToken = errors.New("An error occured while encoding the JWT")
+	// ErrEncodingToken is returned when the service encounters an error during encoding
+	ErrEncodingToken = errors.New("An error occured while encoding the JWT")
 
-// ErrInvalidToken is returned when the token provided is not valid
-var ErrInvalidToken = errors.New("An invalid token was provided")
+	// ErrInvalidToken is returned when the token provided is not valid
+	ErrInvalidToken = errors.New("An invalid token was provided")
+
+	// ErrMissingToken is returned when no token is provided
+	ErrMissingToken = errors.New("A valid JWT is required")
+)
 
 // NewAuth returns a new instance of the Auth service
 func NewAuth(opts ...auth.Option) auth.Auth {
@@ -56,7 +61,13 @@ type AuthClaims struct {
 
 // Generate a new JWT
 func (s *svc) Generate(id string, ops ...auth.GenerateOption) (*auth.Account, error) {
-	key, err := jwt.ParseRSAPrivateKeyFromPEM(s.options.PrivateKey)
+	// decode the private key
+	priv, err := base64.StdEncoding.DecodeString(s.options.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+
+	key, err := jwt.ParseRSAPrivateKeyFromPEM(priv)
 	if err != nil {
 		return nil, ErrEncodingToken
 	}
@@ -64,8 +75,8 @@ func (s *svc) Generate(id string, ops ...auth.GenerateOption) (*auth.Account, er
 	options := auth.NewGenerateOptions(ops...)
 	account := jwt.NewWithClaims(jwt.SigningMethodRS256, AuthClaims{
 		id, options.Roles, options.Metadata, jwt.StandardClaims{
-			Subject:   "TODO",
-			ExpiresAt: time.Now().Add(time.Hour * 24).Unix(),
+			Subject:   id,
+			ExpiresAt: options.Expiry.Unix(),
 		},
 	})
 
@@ -87,10 +98,20 @@ func (s *svc) Revoke(token string) error {
 	return nil
 }
 
-// Validate a JWT
-func (s *svc) Validate(token string) (*auth.Account, error) {
+// Verify a JWT
+func (s *svc) Verify(token string) (*auth.Account, error) {
+	if token == "" {
+		return nil, ErrMissingToken
+	}
+
+	// decode the public key
+	pub, err := base64.StdEncoding.DecodeString(s.options.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+
 	res, err := jwt.ParseWithClaims(token, &AuthClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return jwt.ParseRSAPublicKeyFromPEM(s.options.PublicKey)
+		return jwt.ParseRSAPublicKeyFromPEM(pub)
 	})
 	if err != nil {
 		return nil, err
@@ -100,7 +121,10 @@ func (s *svc) Validate(token string) (*auth.Account, error) {
 		return nil, ErrInvalidToken
 	}
 
-	claims := res.Claims.(*AuthClaims)
+	claims, ok := res.Claims.(*AuthClaims)
+	if !ok {
+		return nil, ErrInvalidToken
+	}
 
 	return &auth.Account{
 		Id:       claims.Id,

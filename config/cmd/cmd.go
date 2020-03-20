@@ -8,16 +8,22 @@ import (
 	"time"
 
 	"github.com/micro/go-micro/v2/auth"
+	"github.com/micro/go-micro/v2/auth/provider"
 	"github.com/micro/go-micro/v2/broker"
 	"github.com/micro/go-micro/v2/client"
 	"github.com/micro/go-micro/v2/client/selector"
+	"github.com/micro/go-micro/v2/config"
+	configSrv "github.com/micro/go-micro/v2/config/source/service"
+	"github.com/micro/go-micro/v2/debug/profile"
+	"github.com/micro/go-micro/v2/debug/profile/http"
+	"github.com/micro/go-micro/v2/debug/profile/pprof"
 	"github.com/micro/go-micro/v2/debug/trace"
+	"github.com/micro/go-micro/v2/logger"
 	"github.com/micro/go-micro/v2/registry"
 	"github.com/micro/go-micro/v2/runtime"
 	"github.com/micro/go-micro/v2/server"
 	"github.com/micro/go-micro/v2/store"
 	"github.com/micro/go-micro/v2/transport"
-	"github.com/micro/go-micro/v2/util/log"
 
 	// clients
 	cgrpc "github.com/micro/go-micro/v2/client/grpc"
@@ -25,6 +31,7 @@ import (
 
 	// servers
 	"github.com/micro/cli/v2"
+
 	sgrpc "github.com/micro/go-micro/v2/server/grpc"
 	smucp "github.com/micro/go-micro/v2/server/mucp"
 
@@ -65,6 +72,11 @@ import (
 	// auth
 	jwtAuth "github.com/micro/go-micro/v2/auth/jwt"
 	sAuth "github.com/micro/go-micro/v2/auth/service"
+	storeAuth "github.com/micro/go-micro/v2/auth/store"
+
+	// auth providers
+	"github.com/micro/go-micro/v2/auth/provider/basic"
+	"github.com/micro/go-micro/v2/auth/provider/oauth"
 )
 
 type Cmd interface {
@@ -245,6 +257,11 @@ var (
 			Usage:   "Auth for role based access control, e.g. service",
 		},
 		&cli.StringFlag{
+			Name:    "auth_token",
+			EnvVars: []string{"MICRO_AUTH_TOKEN"},
+			Usage:   "Auth token used for client authentication",
+		},
+		&cli.StringFlag{
 			Name:    "auth_public_key",
 			EnvVars: []string{"MICRO_AUTH_PUBLIC_KEY"},
 			Usage:   "Public key for JWT auth (base64 encoded PEM)",
@@ -257,7 +274,42 @@ var (
 		&cli.StringSliceFlag{
 			Name:    "auth_exclude",
 			EnvVars: []string{"MICRO_AUTH_EXCLUDE"},
-			Usage:   "Comma-separated list of endpoints excluded from authentication",
+			Usage:   "Comma-separated list of endpoints excluded from authentication, e.g. Users.ListUsers",
+		},
+		&cli.StringFlag{
+			Name:    "auth_provider",
+			EnvVars: []string{"MICRO_AUTH_PROVIDER"},
+			Usage:   "Auth provider used to login user",
+		},
+		&cli.StringFlag{
+			Name:    "auth_provider_client_id",
+			EnvVars: []string{"MICRO_AUTH_PROVIDER_CLIENT_ID"},
+			Usage:   "The client id to be used for oauth",
+		},
+		&cli.StringFlag{
+			Name:    "auth_provider_client_secret",
+			EnvVars: []string{"MICRO_AUTH_PROVIDER_CLIENT_SECRET"},
+			Usage:   "The client secret to be used for oauth",
+		},
+		&cli.StringFlag{
+			Name:    "auth_provider_endpoint",
+			EnvVars: []string{"MICRO_AUTH_PROVIDER_ENDPOINT"},
+			Usage:   "The enpoint to be used for oauth",
+		},
+		&cli.StringFlag{
+			Name:    "auth_provider_redirect",
+			EnvVars: []string{"MICRO_AUTH_PROVIDER_REDIRECT"},
+			Usage:   "The redirect to be used for oauth",
+		},
+		&cli.StringFlag{
+			Name:    "auth_provider_scope",
+			EnvVars: []string{"MICRO_AUTH_PROVIDER_SCOPE"},
+			Usage:   "The scope to be used for oauth",
+		},
+		&cli.StringFlag{
+			Name:    "config",
+			EnvVars: []string{"MICRO_CONFIG"},
+			Usage:   "The source of the config to be used to get configuration",
 		},
 	}
 
@@ -314,7 +366,22 @@ var (
 
 	DefaultAuths = map[string]func(...auth.Option) auth.Auth{
 		"service": sAuth.NewAuth,
+		"store":   storeAuth.NewAuth,
 		"jwt":     jwtAuth.NewAuth,
+	}
+
+	DefaultAuthProviders = map[string]func(...provider.Option) provider.Provider{
+		"oauth": oauth.NewProvider,
+		"basic": basic.NewProvider,
+	}
+
+	DefaultProfiles = map[string]func(...profile.Option) profile.Profile{
+		"http":  http.NewProfile,
+		"pprof": pprof.NewProfile,
+	}
+
+	DefaultConfigs = map[string]func(...config.Option) (config.Config, error){
+		"service": config.NewConfig,
 	}
 )
 
@@ -334,6 +401,8 @@ func newCmd(opts ...Option) Cmd {
 		Runtime:   &runtime.DefaultRuntime,
 		Store:     &store.DefaultStore,
 		Tracer:    &trace.DefaultTracer,
+		Profile:   &profile.DefaultProfile,
+		Config:    &config.DefaultConfig,
 
 		Brokers:    DefaultBrokers,
 		Clients:    DefaultClients,
@@ -345,6 +414,8 @@ func newCmd(opts ...Option) Cmd {
 		Stores:     DefaultStores,
 		Tracers:    DefaultTracers,
 		Auths:      DefaultAuths,
+		Profiles:   DefaultProfiles,
+		Configs:    DefaultConfigs,
 	}
 
 	for _, o := range opts {
@@ -428,6 +499,16 @@ func (c *cmd) Before(ctx *cli.Context) error {
 		*c.opts.Auth = a()
 	}
 
+	// Set the profile
+	if name := ctx.String("profile"); len(name) > 0 {
+		p, ok := c.opts.Profiles[name]
+		if !ok {
+			return fmt.Errorf("Unsupported profile: %s", name)
+		}
+
+		*c.opts.Profile = p()
+	}
+
 	// Set the client
 	if name := ctx.String("client"); len(name) > 0 {
 		// only change if we have the client and type differs
@@ -468,13 +549,13 @@ func (c *cmd) Before(ctx *cli.Context) error {
 		clientOpts = append(clientOpts, client.Registry(*c.opts.Registry))
 
 		if err := (*c.opts.Selector).Init(selector.Registry(*c.opts.Registry)); err != nil {
-			log.Fatalf("Error configuring registry: %v", err)
+			logger.Fatalf("Error configuring registry: %v", err)
 		}
 
 		clientOpts = append(clientOpts, client.Selector(*c.opts.Selector))
 
 		if err := (*c.opts.Broker).Init(broker.Registry(*c.opts.Registry)); err != nil {
-			log.Fatalf("Error configuring broker: %v", err)
+			logger.Fatalf("Error configuring broker: %v", err)
 		}
 	}
 
@@ -521,31 +602,31 @@ func (c *cmd) Before(ctx *cli.Context) error {
 
 	if len(ctx.String("broker_address")) > 0 {
 		if err := (*c.opts.Broker).Init(broker.Addrs(strings.Split(ctx.String("broker_address"), ",")...)); err != nil {
-			log.Fatalf("Error configuring broker: %v", err)
+			logger.Fatalf("Error configuring broker: %v", err)
 		}
 	}
 
 	if len(ctx.String("registry_address")) > 0 {
 		if err := (*c.opts.Registry).Init(registry.Addrs(strings.Split(ctx.String("registry_address"), ",")...)); err != nil {
-			log.Fatalf("Error configuring registry: %v", err)
+			logger.Fatalf("Error configuring registry: %v", err)
 		}
 	}
 
 	if len(ctx.String("transport_address")) > 0 {
 		if err := (*c.opts.Transport).Init(transport.Addrs(strings.Split(ctx.String("transport_address"), ",")...)); err != nil {
-			log.Fatalf("Error configuring transport: %v", err)
+			logger.Fatalf("Error configuring transport: %v", err)
 		}
 	}
 
 	if len(ctx.String("store_address")) > 0 {
 		if err := (*c.opts.Store).Init(store.Nodes(strings.Split(ctx.String("store_address"), ",")...)); err != nil {
-			log.Fatalf("Error configuring store: %v", err)
+			logger.Fatalf("Error configuring store: %v", err)
 		}
 	}
 
 	if len(ctx.String("store_namespace")) > 0 {
 		if err := (*c.opts.Store).Init(store.Namespace(ctx.String("store_address"))); err != nil {
-			log.Fatalf("Error configuring store: %v", err)
+			logger.Fatalf("Error configuring store: %v", err)
 		}
 	}
 
@@ -579,8 +660,12 @@ func (c *cmd) Before(ctx *cli.Context) error {
 
 	if len(ctx.String("runtime_source")) > 0 {
 		if err := (*c.opts.Runtime).Init(runtime.WithSource(ctx.String("runtime_source"))); err != nil {
-			log.Fatalf("Error configuring runtime: %v", err)
+			logger.Fatalf("Error configuring runtime: %v", err)
 		}
+	}
+
+	if len(ctx.String("auth_token")) > 0 {
+		authOpts = append(authOpts, auth.Token(ctx.String("auth_token")))
 	}
 
 	if len(ctx.String("auth_public_key")) > 0 {
@@ -592,12 +677,45 @@ func (c *cmd) Before(ctx *cli.Context) error {
 	}
 
 	if len(ctx.StringSlice("auth_exclude")) > 0 {
-		authOpts = append(authOpts, auth.Excludes(ctx.StringSlice("auth_exclude")...))
+		authOpts = append(authOpts, auth.Exclude(ctx.StringSlice("auth_exclude")...))
+	}
+
+	if name := ctx.String("auth_provider"); len(name) > 0 {
+		p, ok := DefaultAuthProviders[name]
+		if !ok {
+			return fmt.Errorf("AuthProvider %s not found", name)
+		}
+
+		var provOpts []provider.Option
+
+		clientID := ctx.String("auth_provider_client_id")
+		clientSecret := ctx.String("auth_provider_client_secret")
+		if len(clientID) > 0 || len(clientSecret) > 0 {
+			provOpts = append(provOpts, provider.Credentials(clientID, clientSecret))
+		}
+		if e := ctx.String("auth_provider_endpoint"); len(e) > 0 {
+			provOpts = append(provOpts, provider.Endpoint(e))
+		}
+		if r := ctx.String("auth_provider_redirect"); len(r) > 0 {
+			provOpts = append(provOpts, provider.Redirect(r))
+		}
+		if s := ctx.String("auth_provider_scope"); len(s) > 0 {
+			provOpts = append(provOpts, provider.Scope(s))
+		}
+
+		authOpts = append(authOpts, auth.Provider(p(provOpts...)))
 	}
 
 	if len(authOpts) > 0 {
 		if err := (*c.opts.Auth).Init(authOpts...); err != nil {
-			log.Fatalf("Error configuring auth: %v", err)
+			logger.Fatalf("Error configuring auth: %v", err)
+		}
+	}
+
+	if ctx.String("config") == "service" {
+		opt := config.WithSource(configSrv.NewSource())
+		if err := (*c.opts.Config).Init(opt); err != nil {
+			logger.Fatalf("Error configuring config: %v", err)
 		}
 	}
 
@@ -630,14 +748,14 @@ func (c *cmd) Before(ctx *cli.Context) error {
 	// Lets set it up
 	if len(serverOpts) > 0 {
 		if err := (*c.opts.Server).Init(serverOpts...); err != nil {
-			log.Fatalf("Error configuring server: %v", err)
+			logger.Fatalf("Error configuring server: %v", err)
 		}
 	}
 
 	// Use an init option?
 	if len(clientOpts) > 0 {
 		if err := (*c.opts.Client).Init(clientOpts...); err != nil {
-			log.Fatalf("Error configuring client: %v", err)
+			logger.Fatalf("Error configuring client: %v", err)
 		}
 	}
 

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/micro/go-micro/v2/codec/json"
+	"github.com/micro/go-micro/v2/logger"
 	"github.com/micro/go-micro/v2/registry"
 	"github.com/micro/go-micro/v2/util/addr"
-	"github.com/micro/go-micro/v2/util/log"
 	"github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 )
@@ -53,8 +53,9 @@ type subscriber struct {
 }
 
 type publication struct {
-	t string
-	m *Message
+	t   string
+	err error
+	m   *Message
 }
 
 func (p *publication) Topic() string {
@@ -68,6 +69,10 @@ func (p *publication) Message() *Message {
 func (p *publication) Ack() error {
 	// nats does not support acking
 	return nil
+}
+
+func (p *publication) Error() error {
+	return p.err
 }
 
 func (s *subscriber) Options() SubscribeOptions {
@@ -167,7 +172,9 @@ func (n *natsBroker) serve(exit chan bool) error {
 			for _, node := range service.Nodes {
 				u, err := url.Parse("nats://" + node.Address)
 				if err != nil {
-					log.Log(err)
+					if logger.V(logger.InfoLevel, logger.DefaultLogger) {
+						logger.Info(err)
+					}
 					continue
 				}
 				// append to the cluster routes
@@ -242,7 +249,9 @@ func (n *natsBroker) serve(exit chan bool) error {
 			select {
 			case err := <-n.closeCh:
 				if err != nil {
-					log.Log(err)
+					if logger.V(logger.InfoLevel, logger.DefaultLogger) {
+						logger.Info(err)
+					}
 				}
 			case <-exit:
 				// deregister on exit
@@ -390,10 +399,30 @@ func (n *natsBroker) Subscribe(topic string, handler Handler, opts ...SubscribeO
 
 	fn := func(msg *nats.Msg) {
 		var m Message
-		if err := n.opts.Codec.Unmarshal(msg.Data, &m); err != nil {
+		pub := &publication{t: msg.Subject}
+		eh := n.opts.ErrorHandler
+		err := n.opts.Codec.Unmarshal(msg.Data, &m)
+		pub.err = err
+		pub.m = &m
+		if err != nil {
+			m.Body = msg.Data
+			if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+				logger.Error(err)
+			}
+			if eh != nil {
+				eh(pub)
+			}
 			return
 		}
-		handler(&publication{m: &m, t: msg.Subject})
+		if err := handler(pub); err != nil {
+			pub.err = err
+			if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+				logger.Error(err)
+			}
+			if eh != nil {
+				eh(pub)
+			}
+		}
 	}
 
 	var sub *nats.Subscription

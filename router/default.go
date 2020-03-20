@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/micro/go-micro/v2/logger"
 	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/util/log"
 )
 
 var (
@@ -308,11 +308,15 @@ func (m adverts) process(a *advert) error {
 	// suppress/recover the event based on its penalty level
 	switch {
 	case a.penalty > AdvertSuppress && !a.isSuppressed:
-		log.Debugf("Router suppressing advert %d %.2f for route %s %s", hash, a.penalty, service, address)
+		if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+			logger.Debugf("Router suppressing advert %d %.2f for route %s %s", hash, a.penalty, service, address)
+		}
 		a.isSuppressed = true
 		a.suppressTime = time.Now()
 	case a.penalty < AdvertRecover && a.isSuppressed:
-		log.Debugf("Router recovering advert %d %.2f for route %s %s", hash, a.penalty, service, address)
+		if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+			logger.Debugf("Router recovering advert %d %.2f for route %s %s", hash, a.penalty, service, address)
+		}
 		a.isSuppressed = false
 	}
 
@@ -357,20 +361,26 @@ func (r *router) advertiseEvents() error {
 					// routing table watcher
 					w, err = r.Watch()
 					if err != nil {
-						log.Logf("Error creating watcher: %v", err)
+						if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+							logger.Errorf("Error creating watcher: %v", err)
+						}
 						time.Sleep(time.Second)
 						continue
 					}
 				}
 
 				if err := r.watchTable(w); err != nil {
-					log.Logf("Error watching table: %v", err)
+					if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+						logger.Errorf("Error watching table: %v", err)
+					}
 					time.Sleep(time.Second)
 				}
 
-				// reset
-				w.Stop()
-				w = nil
+				if w != nil {
+					// reset
+					w.Stop()
+					w = nil
+				}
 			}
 		}
 	}()
@@ -389,7 +399,9 @@ func (r *router) advertiseEvents() error {
 			for key, advert := range adverts {
 				// process the advert
 				if err := adverts.process(advert); err != nil {
-					log.Debugf("Router failed processing advert %d: %v", key, err)
+					if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+						logger.Debugf("Router failed processing advert %d: %v", key, err)
+					}
 					continue
 				}
 				// if suppressed go to the next advert
@@ -414,7 +426,9 @@ func (r *router) advertiseEvents() error {
 
 			// advertise events to subscribers
 			if len(events) > 0 {
-				log.Debugf("Router publishing %d events", len(events))
+				if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+					logger.Debugf("Router publishing %d events", len(events))
+				}
 				go r.publishAdvert(RouteUpdate, events)
 			}
 		case e := <-r.eventChan:
@@ -435,7 +449,9 @@ func (r *router) advertiseEvents() error {
 
 			now := time.Now()
 
-			log.Debugf("Router processing table event %s for service %s %s", e.Type, e.Route.Service, e.Route.Address)
+			if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+				logger.Debugf("Router processing table event %s for service %s %s", e.Type, e.Route.Service, e.Route.Address)
+			}
 
 			// check if we have already registered the route
 			hash := e.Route.Hash()
@@ -457,7 +473,9 @@ func (r *router) advertiseEvents() error {
 
 			// process the advert
 			if err := adverts.process(a); err != nil {
-				log.Debugf("Router error processing advert  %d: %v", hash, err)
+				if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+					logger.Debugf("Router error processing advert  %d: %v", hash, err)
+				}
 				continue
 			}
 
@@ -465,9 +483,13 @@ func (r *router) advertiseEvents() error {
 			a.lastSeen = now
 			// increment the penalty
 			a.penalty += Penalty
-			log.Debugf("Router advert %d for route %s %s event penalty: %f", hash, a.event.Route.Service, a.event.Route.Address, a.penalty)
+			if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+				logger.Debugf("Router advert %d for route %s %s event penalty: %f", hash, a.event.Route.Service, a.event.Route.Address, a.penalty)
+			}
 		case <-r.exit:
-			w.Stop()
+			if w != nil {
+				w.Stop()
+			}
 			return nil
 		}
 	}
@@ -538,14 +560,18 @@ func (r *router) Start() error {
 				if w == nil {
 					w, err = r.options.Registry.Watch()
 					if err != nil {
-						log.Logf("failed creating registry watcher: %v", err)
+						if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+							logger.Errorf("failed creating registry watcher: %v", err)
+						}
 						time.Sleep(time.Second)
 						continue
 					}
 				}
 
 				if err := r.watchRegistry(w); err != nil {
-					log.Logf("Error watching the registry: %v", err)
+					if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+						logger.Errorf("Error watching the registry: %v", err)
+					}
 					time.Sleep(time.Second)
 				}
 
@@ -602,7 +628,9 @@ func (r *router) Advertise() (<-chan *Advert, error) {
 			return
 		default:
 			if err := r.advertiseEvents(); err != nil {
-				log.Logf("Error adveritising events: %v", err)
+				if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+					logger.Errorf("Error adveritising events: %v", err)
+				}
 			}
 		}
 	}()
@@ -622,19 +650,25 @@ func (r *router) Process(a *Advert) error {
 		return events[i].Timestamp.Before(events[j].Timestamp)
 	})
 
-	log.Tracef("Router %s processing advert from: %s", r.options.Id, a.Id)
+	if logger.V(logger.TraceLevel, logger.DefaultLogger) {
+		logger.Tracef("Router %s processing advert from: %s", r.options.Id, a.Id)
+	}
 
 	for _, event := range events {
 		// skip if the router is the origin of this route
 		if event.Route.Router == r.options.Id {
-			log.Tracef("Router skipping processing its own route: %s", r.options.Id)
+			if logger.V(logger.TraceLevel, logger.DefaultLogger) {
+				logger.Tracef("Router skipping processing its own route: %s", r.options.Id)
+			}
 			continue
 		}
 		// create a copy of the route
 		route := event.Route
 		action := event.Type
 
-		log.Tracef("Router %s applying %s from router %s for service %s %s", r.options.Id, action, route.Router, route.Service, route.Address)
+		if logger.V(logger.TraceLevel, logger.DefaultLogger) {
+			logger.Tracef("Router %s applying %s from router %s for service %s %s", r.options.Id, action, route.Router, route.Service, route.Address)
+		}
 
 		if err := r.manageRoute(route, action.String()); err != nil {
 			return fmt.Errorf("failed applying action %s to routing table: %s", action, err)
@@ -657,7 +691,9 @@ func (r *router) flushRouteEvents(evType EventType) ([]*Event, error) {
 		return nil, err
 	}
 
-	log.Debugf("Router advertising %d routes with strategy %s", len(routes), r.options.Advertise)
+	if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+		logger.Debugf("Router advertising %d routes with strategy %s", len(routes), r.options.Advertise)
+	}
 
 	// build a list of events to advertise
 	events := make([]*Event, len(routes))
@@ -700,16 +736,15 @@ func (r *router) Stop() error {
 		// extract the events
 		r.drain()
 
+		r.sub.Lock()
 		// close advert subscribers
 		for id, sub := range r.subscribers {
 			// close the channel
 			close(sub)
-
 			// delete the subscriber
-			r.sub.Lock()
 			delete(r.subscribers, id)
-			r.sub.Unlock()
 		}
+		r.sub.Unlock()
 	}
 
 	// remove event chan

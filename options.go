@@ -9,7 +9,9 @@ import (
 	"github.com/micro/go-micro/v2/broker"
 	"github.com/micro/go-micro/v2/client"
 	"github.com/micro/go-micro/v2/client/selector"
+	"github.com/micro/go-micro/v2/config"
 	"github.com/micro/go-micro/v2/config/cmd"
+	"github.com/micro/go-micro/v2/debug/profile"
 	"github.com/micro/go-micro/v2/debug/trace"
 	"github.com/micro/go-micro/v2/registry"
 	"github.com/micro/go-micro/v2/server"
@@ -21,10 +23,12 @@ type Options struct {
 	Auth      auth.Auth
 	Broker    broker.Broker
 	Cmd       cmd.Cmd
+	Config    config.Config
 	Client    client.Client
 	Server    server.Server
 	Registry  registry.Registry
 	Transport transport.Transport
+	Profile   profile.Profile
 
 	// Before and After funcs
 	BeforeStart []func() error
@@ -44,6 +48,7 @@ func newOptions(opts ...Option) Options {
 		Auth:      auth.DefaultAuth,
 		Broker:    broker.DefaultBroker,
 		Cmd:       cmd.DefaultCmd,
+		Config:    config.DefaultConfig,
 		Client:    client.DefaultClient,
 		Server:    server.DefaultServer,
 		Registry:  registry.DefaultRegistry,
@@ -99,6 +104,13 @@ func HandleSignal(b bool) Option {
 	}
 }
 
+// Profile to be used for debug profile
+func Profile(p profile.Profile) Option {
+	return func(o *Options) {
+		o.Profile = p
+	}
+}
+
 // Server to be used for service
 func Server(s server.Server) Option {
 	return func(o *Options) {
@@ -131,6 +143,13 @@ func Auth(a auth.Auth) Option {
 	return func(o *Options) {
 		o.Auth = a
 		o.Server.Init(server.Auth(a))
+	}
+}
+
+// Config sets the config for the service
+func Config(c config.Config) Option {
+	return func(o *Options) {
+		o.Config = c
 	}
 }
 

@@ -3,13 +3,14 @@ package runtime
 import (
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/micro/go-micro/v2/logger"
 	"github.com/micro/go-micro/v2/runtime/local/build"
 	"github.com/micro/go-micro/v2/runtime/local/process"
 	proc "github.com/micro/go-micro/v2/runtime/local/process/os"
-	"github.com/micro/go-micro/v2/util/log"
 )
 
 type service struct {
@@ -41,11 +42,8 @@ func newService(s *Service, c CreateOptions) *service {
 	var args []string
 
 	// set command
-	exec = c.Command[0]
-	// set args
-	if len(c.Command) > 1 {
-		args = c.Command[1:]
-	}
+	exec = strings.Join(c.Command, " ")
+	args = c.Args
 
 	return &service{
 		Service: s,
@@ -111,7 +109,9 @@ func (s *service) Start() error {
 	delete(s.Metadata, "error")
 
 	// TODO: pull source & build binary
-	log.Debugf("Runtime service %s forking new process", s.Service.Name)
+	if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+		logger.Debugf("Runtime service %s forking new process", s.Service.Name)
+	}
 	p, err := s.Process.Fork(s.Exec)
 	if err != nil {
 		s.Metadata["status"] = "error"

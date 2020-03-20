@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"os"
-	"sync"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/micro/go-micro/v2/broker"
@@ -16,6 +18,7 @@ import (
 	"github.com/micro/go-micro/v2/errors"
 	"github.com/micro/go-micro/v2/metadata"
 	"github.com/micro/go-micro/v2/registry"
+	"github.com/micro/go-micro/v2/util/config"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -23,10 +26,14 @@ import (
 	gmetadata "google.golang.org/grpc/metadata"
 )
 
+var (
+	BearerScheme = "Bearer "
+)
+
 type grpcClient struct {
-	once sync.Once
 	opts client.Options
 	pool *pool
+	once atomic.Value
 }
 
 func init() {
@@ -36,14 +43,36 @@ func init() {
 }
 
 // secure returns the dial option for whether its a secure or insecure connection
-func (g *grpcClient) secure() grpc.DialOption {
+func (g *grpcClient) secure(addr string) grpc.DialOption {
+	// first we check if theres'a  tls config
 	if g.opts.Context != nil {
 		if v := g.opts.Context.Value(tlsAuth{}); v != nil {
 			tls := v.(*tls.Config)
 			creds := credentials.NewTLS(tls)
+			// return tls config if it exists
 			return grpc.WithTransportCredentials(creds)
 		}
 	}
+
+	// default config
+	tlsConfig := &tls.Config{}
+	defaultCreds := grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))
+
+	// check if the address is prepended with https
+	if strings.HasPrefix(addr, "https://") {
+		return defaultCreds
+	}
+
+	// if no port is specified or port is 443 default to tls
+	_, port, err := net.SplitHostPort(addr)
+	// assuming with no port its going to be secured
+	if port == "443" {
+		return defaultCreds
+	} else if err != nil && strings.Contains(err.Error(), "missing port in address") {
+		return defaultCreds
+	}
+
+	// other fallback to insecure
 	return grpc.WithInsecure()
 }
 
@@ -52,6 +81,10 @@ func (g *grpcClient) next(request client.Request, opts client.CallOptions) (sele
 
 	// get proxy
 	if prx := os.Getenv("MICRO_PROXY"); len(prx) > 0 {
+		// default name
+		if prx == "service" {
+			prx = "go.micro.proxy"
+		}
 		service = prx
 	}
 
@@ -82,19 +115,31 @@ func (g *grpcClient) next(request client.Request, opts client.CallOptions) (sele
 }
 
 func (g *grpcClient) call(ctx context.Context, node *registry.Node, req client.Request, rsp interface{}, opts client.CallOptions) error {
+	var header map[string]string
+
 	address := node.Address
 
-	header := make(map[string]string)
+	header = make(map[string]string)
 	if md, ok := metadata.FromContext(ctx); ok {
+		header = make(map[string]string, len(md))
 		for k, v := range md {
-			header[k] = v
+			header[strings.ToLower(k)] = v
 		}
+	} else {
+		header = make(map[string]string)
 	}
 
 	// set timeout in nanoseconds
 	header["timeout"] = fmt.Sprintf("%d", opts.RequestTimeout)
 	// set the content type for the request
 	header["x-content-type"] = req.ContentType()
+
+	// set the authorization token if one is saved locally
+	if len(header["authorization"]) == 0 {
+		if token, err := config.Get("token"); err == nil && len(token) > 0 {
+			header["authorization"] = BearerScheme + token
+		}
+	}
 
 	md := gmetadata.New(header)
 	ctx = gmetadata.NewOutgoingContext(ctx, md)
@@ -112,7 +157,7 @@ func (g *grpcClient) call(ctx context.Context, node *registry.Node, req client.R
 	grpcDialOptions := []grpc.DialOption{
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(cf)),
 		grpc.WithTimeout(opts.DialTimeout),
-		g.secure(),
+		g.secure(address),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(maxRecvMsgSize),
 			grpc.MaxCallSendMsgSize(maxSendMsgSize),
@@ -154,13 +199,17 @@ func (g *grpcClient) call(ctx context.Context, node *registry.Node, req client.R
 }
 
 func (g *grpcClient) stream(ctx context.Context, node *registry.Node, req client.Request, opts client.CallOptions) (client.Stream, error) {
+	var header map[string]string
+
 	address := node.Address
 
-	header := make(map[string]string)
 	if md, ok := metadata.FromContext(ctx); ok {
+		header = make(map[string]string, len(md))
 		for k, v := range md {
 			header[k] = v
 		}
+	} else {
+		header = make(map[string]string)
 	}
 
 	// set timeout in nanoseconds
@@ -189,7 +238,8 @@ func (g *grpcClient) stream(ctx context.Context, node *registry.Node, req client
 
 	grpcDialOptions := []grpc.DialOption{
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(wc)),
-		g.secure(),
+		grpc.WithTimeout(opts.DialTimeout),
+		g.secure(address),
 	}
 
 	if opts := g.getGrpcDialOptions(); opts != nil {
@@ -217,6 +267,12 @@ func (g *grpcClient) stream(ctx context.Context, node *registry.Node, req client
 
 	st, err := cc.NewStream(newCtx, desc, methodToGRPC(req.Service(), req.Endpoint()), grpcCallOptions...)
 	if err != nil {
+		// we need to cleanup as we dialled and created a context
+		// cancel the context
+		cancel()
+		// close the connection
+		cc.Close()
+		// now return the error
 		return nil, errors.InternalServerError("go.micro.client", fmt.Sprintf("Error creating stream: %v", err))
 	}
 
@@ -339,6 +395,11 @@ func (g *grpcClient) NewRequest(service, method string, req interface{}, reqOpts
 }
 
 func (g *grpcClient) Call(ctx context.Context, req client.Request, rsp interface{}, opts ...client.CallOption) error {
+	if req == nil {
+		return errors.InternalServerError("go.micro.client", "req is nil")
+	} else if rsp == nil {
+		return errors.InternalServerError("go.micro.client", "rsp is nil")
+	}
 	// make a copy of call opts
 	callOpts := g.opts.CallOptions
 	for _, opt := range opts {
@@ -405,6 +466,10 @@ func (g *grpcClient) Call(ctx context.Context, req client.Request, rsp interface
 		// make the call
 		err = gcall(ctx, node, req, rsp, callOpts)
 		g.opts.Selector.Mark(service, node, err)
+		if verr, ok := err.(*errors.Error); ok {
+			return verr
+		}
+
 		return err
 	}
 
@@ -559,16 +624,14 @@ func (g *grpcClient) Publish(ctx context.Context, p client.Message, opts ...clie
 		body = b
 	}
 
-	g.once.Do(func() {
-		g.opts.Broker.Connect()
-	})
+	if !g.once.Load().(bool) {
+		if err = g.opts.Broker.Connect(); err != nil {
+			return errors.InternalServerError("go.micro.client", err.Error())
+		}
+		g.once.Store(true)
+	}
 
 	topic := p.Topic()
-
-	// get proxy topic
-	if prx := os.Getenv("MICRO_PROXY"); len(prx) > 0 {
-		options.Exchange = prx
-	}
 
 	// get the exchange
 	if len(options.Exchange) > 0 {
@@ -635,9 +698,9 @@ func newClient(opts ...client.Option) client.Client {
 	}
 
 	rc := &grpcClient{
-		once: sync.Once{},
 		opts: options,
 	}
+	rc.once.Store(false)
 
 	rc.pool = newPool(options.PoolSize, options.PoolTTL, rc.poolMaxIdle(), rc.poolMaxStreams())
 
