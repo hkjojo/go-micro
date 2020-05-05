@@ -36,13 +36,13 @@ import (
 	smucp "github.com/micro/go-micro/v2/server/mucp"
 
 	// brokers
+	brokerHttp "github.com/micro/go-micro/v2/broker/http"
 	"github.com/micro/go-micro/v2/broker/memory"
 	"github.com/micro/go-micro/v2/broker/nats"
 	brokerSrv "github.com/micro/go-micro/v2/broker/service"
 
 	// registries
 	"github.com/micro/go-micro/v2/registry/etcd"
-	kreg "github.com/micro/go-micro/v2/registry/kubernetes"
 	"github.com/micro/go-micro/v2/registry/mdns"
 	rmem "github.com/micro/go-micro/v2/registry/memory"
 	regSrv "github.com/micro/go-micro/v2/registry/service"
@@ -71,8 +71,7 @@ import (
 
 	// auth
 	jwtAuth "github.com/micro/go-micro/v2/auth/jwt"
-	sAuth "github.com/micro/go-micro/v2/auth/service"
-	storeAuth "github.com/micro/go-micro/v2/auth/store"
+	svcAuth "github.com/micro/go-micro/v2/auth/service"
 
 	// auth providers
 	"github.com/micro/go-micro/v2/auth/provider/basic"
@@ -227,9 +226,14 @@ var (
 			Usage:   "Comma-separated list of store addresses",
 		},
 		&cli.StringFlag{
-			Name:    "store_namespace",
-			EnvVars: []string{"MICRO_STORE_NAMESPACE"},
-			Usage:   "Namespace for store data",
+			Name:    "store_database",
+			EnvVars: []string{"MICRO_STORE_DATABASE"},
+			Usage:   "Database option for the underlying store",
+		},
+		&cli.StringFlag{
+			Name:    "store_table",
+			EnvVars: []string{"MICRO_STORE_TABLE"},
+			Usage:   "Table option for the underlying store",
 		},
 		&cli.StringFlag{
 			Name:    "transport",
@@ -257,9 +261,14 @@ var (
 			Usage:   "Auth for role based access control, e.g. service",
 		},
 		&cli.StringFlag{
-			Name:    "auth_token",
-			EnvVars: []string{"MICRO_AUTH_TOKEN"},
-			Usage:   "Auth token used for client authentication",
+			Name:    "auth_id",
+			EnvVars: []string{"MICRO_AUTH_ID"},
+			Usage:   "Account ID used for client authentication",
+		},
+		&cli.StringFlag{
+			Name:    "auth_secret",
+			EnvVars: []string{"MICRO_AUTH_SECRET"},
+			Usage:   "Account secret used for client authentication",
 		},
 		&cli.StringFlag{
 			Name:    "auth_public_key",
@@ -270,11 +279,6 @@ var (
 			Name:    "auth_private_key",
 			EnvVars: []string{"MICRO_AUTH_PRIVATE_KEY"},
 			Usage:   "Private key for JWT auth (base64 encoded PEM)",
-		},
-		&cli.StringSliceFlag{
-			Name:    "auth_exclude",
-			EnvVars: []string{"MICRO_AUTH_EXCLUDE"},
-			Usage:   "Comma-separated list of endpoints excluded from authentication, e.g. Users.ListUsers",
 		},
 		&cli.StringFlag{
 			Name:    "auth_provider",
@@ -317,6 +321,7 @@ var (
 		"service": brokerSrv.NewBroker,
 		"memory":  memory.NewBroker,
 		"nats":    nats.NewBroker,
+		"http":    brokerHttp.NewBroker,
 	}
 
 	DefaultClients = map[string]func(...client.Option) client.Client{
@@ -325,11 +330,10 @@ var (
 	}
 
 	DefaultRegistries = map[string]func(...registry.Option) registry.Registry{
-		"service":    regSrv.NewRegistry,
-		"etcd":       etcd.NewRegistry,
-		"mdns":       mdns.NewRegistry,
-		"memory":     rmem.NewRegistry,
-		"kubernetes": kreg.NewRegistry,
+		"service": regSrv.NewRegistry,
+		"etcd":    etcd.NewRegistry,
+		"mdns":    mdns.NewRegistry,
+		"memory":  rmem.NewRegistry,
 	}
 
 	DefaultSelectors = map[string]func(...selector.Option) selector.Selector{
@@ -365,8 +369,7 @@ var (
 	}
 
 	DefaultAuths = map[string]func(...auth.Option) auth.Auth{
-		"service": sAuth.NewAuth,
-		"store":   storeAuth.NewAuth,
+		"service": svcAuth.NewAuth,
 		"jwt":     jwtAuth.NewAuth,
 	}
 
@@ -497,6 +500,8 @@ func (c *cmd) Before(ctx *cli.Context) error {
 		}
 
 		*c.opts.Auth = a()
+		clientOpts = append(clientOpts, client.Auth(*c.opts.Auth))
+		serverOpts = append(serverOpts, server.Auth(*c.opts.Auth))
 	}
 
 	// Set the profile
@@ -624,9 +629,15 @@ func (c *cmd) Before(ctx *cli.Context) error {
 		}
 	}
 
-	if len(ctx.String("store_namespace")) > 0 {
-		if err := (*c.opts.Store).Init(store.Namespace(ctx.String("store_address"))); err != nil {
-			logger.Fatalf("Error configuring store: %v", err)
+	if len(ctx.String("store_database")) > 0 {
+		if err := (*c.opts.Store).Init(store.Database(ctx.String("store_database"))); err != nil {
+			logger.Fatalf("Error configuring store database option: %v", err)
+		}
+	}
+
+	if len(ctx.String("store_table")) > 0 {
+		if err := (*c.opts.Store).Init(store.Table(ctx.String("store_table"))); err != nil {
+			logger.Fatalf("Error configuring store table option: %v", err)
 		}
 	}
 
@@ -664,20 +675,17 @@ func (c *cmd) Before(ctx *cli.Context) error {
 		}
 	}
 
-	if len(ctx.String("auth_token")) > 0 {
-		authOpts = append(authOpts, auth.Token(ctx.String("auth_token")))
+	if len(ctx.String("auth_id")) > 0 || len(ctx.String("auth_secret")) > 0 {
+		authOpts = append(authOpts, auth.Credentials(
+			ctx.String("auth_id"), ctx.String("auth_secret"),
+		))
 	}
 
 	if len(ctx.String("auth_public_key")) > 0 {
 		authOpts = append(authOpts, auth.PublicKey(ctx.String("auth_public_key")))
 	}
-
 	if len(ctx.String("auth_private_key")) > 0 {
 		authOpts = append(authOpts, auth.PrivateKey(ctx.String("auth_private_key")))
-	}
-
-	if len(ctx.StringSlice("auth_exclude")) > 0 {
-		authOpts = append(authOpts, auth.Exclude(ctx.StringSlice("auth_exclude")...))
 	}
 
 	if name := ctx.String("auth_provider"); len(name) > 0 {
@@ -705,12 +713,7 @@ func (c *cmd) Before(ctx *cli.Context) error {
 
 		authOpts = append(authOpts, auth.Provider(p(provOpts...)))
 	}
-
-	if len(authOpts) > 0 {
-		if err := (*c.opts.Auth).Init(authOpts...); err != nil {
-			logger.Fatalf("Error configuring auth: %v", err)
-		}
-	}
+	(*c.opts.Auth).Init(authOpts...)
 
 	if ctx.String("config") == "service" {
 		opt := config.WithSource(configSrv.NewSource())
