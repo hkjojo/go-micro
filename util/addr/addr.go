@@ -3,6 +3,7 @@ package addr
 import (
 	"fmt"
 	"net"
+	"strings"
 )
 
 var (
@@ -51,7 +52,7 @@ func IsLocal(addr string) bool {
 }
 
 // Extract returns a real ip
-func Extract(addr string) (string, error) {
+func Extract(addr string, preferedNetworks ...string) (string, error) {
 	// if addr specified then its returned
 	if len(addr) > 0 && (addr != "0.0.0.0" && addr != "[::]" && addr != "::") {
 		return addr, nil
@@ -80,6 +81,7 @@ func Extract(addr string) (string, error) {
 	addrs = append(addrs, loAddrs...)
 
 	var ipAddr string
+	var preferedIPAddr string
 	var publicIP string
 
 	for _, rawAddr := range addrs {
@@ -93,13 +95,39 @@ func Extract(addr string) (string, error) {
 			continue
 		}
 
-		if !isPrivateIP(ip.String()) {
-			publicIP = ip.String()
+		addr := ip.String()
+		for _, paddr := range preferedNetworks {
+			if strings.HasPrefix(addr, paddr) {
+				preferedIPAddr = addr
+				break
+			}
+		}
+
+		if !isPrivateIP(addr) {
+			if publicIP == "" {
+				publicIP = addr
+			}
 			continue
 		}
 
-		ipAddr = ip.String()
+		if ipAddr == "" {
+			ipAddr = addr
+		}
+
+		if preferedIPAddr == "" {
+			continue
+		}
+
 		break
+	}
+
+	// return prefered ip
+	if len(preferedIPAddr) > 0 {
+		a := net.ParseIP(preferedIPAddr)
+		if a == nil {
+			return "", fmt.Errorf("ip addr %s is invalid", ipAddr)
+		}
+		return a.String(), nil
 	}
 
 	// return private ip

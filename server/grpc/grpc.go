@@ -622,7 +622,7 @@ func (g *grpcServer) Register() error {
 		cacheService = true
 	}
 
-	addr, err := addr.Extract(host)
+	addr, err := addr.Extract(host, config.PreferedNetworks...)
 	if err != nil {
 		return err
 	}
@@ -766,7 +766,7 @@ func (g *grpcServer) Deregister() error {
 		host = advt
 	}
 
-	addr, err := addr.Extract(host)
+	addr, err := addr.Extract(host, config.PreferedNetworks...)
 	if err != nil {
 		return err
 	}

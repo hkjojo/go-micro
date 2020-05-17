@@ -15,20 +15,21 @@ import (
 )
 
 type Options struct {
-	Codecs       map[string]codec.NewCodec
-	Broker       broker.Broker
-	Registry     registry.Registry
-	Tracer       trace.Tracer
-	Auth         auth.Auth
-	Transport    transport.Transport
-	Metadata     map[string]string
-	Name         string
-	Address      string
-	Advertise    string
-	Id           string
-	Version      string
-	HdlrWrappers []HandlerWrapper
-	SubWrappers  []SubscriberWrapper
+	Codecs           map[string]codec.NewCodec
+	Broker           broker.Broker
+	Registry         registry.Registry
+	Tracer           trace.Tracer
+	Auth             auth.Auth
+	Transport        transport.Transport
+	Metadata         map[string]string
+	Name             string
+	Address          string
+	Advertise        string
+	PreferedNetworks []string
+	Id               string
+	Version          string
+	HdlrWrappers     []HandlerWrapper
+	SubWrappers      []SubscriberWrapper
 
 	// RegisterCheck runs a check function before registering the service
 	RegisterCheck func(context.Context) error
@@ -124,6 +125,13 @@ func Version(v string) Option {
 func Address(a string) Option {
 	return func(o *Options) {
 		o.Address = a
+	}
+}
+
+// PreferedNetworks choose prefered ips to register
+func PreferedNetworks(ps []string) Option {
+	return func(o *Options) {
+		o.PreferedNetworks = ps
 	}
 }
 
