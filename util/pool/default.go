@@ -69,7 +69,7 @@ func (p *pool) Get(addr string, opts ...transport.DialOption) (Conn, error) {
 		p.conns[addr] = conns
 
 		// if conn is old kill it and move on
-		if d := time.Since(conn.Created()); d > p.ttl {
+		if d := time.Since(conn.Created()); p.ttl > 0 && d > p.ttl {
 			conn.Client.Close()
 			continue
 		}

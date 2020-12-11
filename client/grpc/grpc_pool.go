@@ -105,7 +105,7 @@ func (p *pool) getConn(addr string, opts ...grpc.DialOption) (*poolConn, error) 
 		case connectivity.Idle:
 		}
 		//  a old conn
-		if now-conn.created > p.ttl {
+		if p.ttl > 0 && now-conn.created > p.ttl {
 			next := conn.next
 			if conn.streams == 0 {
 				removeConn(conn)
