@@ -19,10 +19,6 @@ type certmagicProvider struct {
 // TODO: set self-contained options
 func (c *certmagicProvider) setup() {
 	certmagic.DefaultACME.CA = c.opts.CA
-	if c.opts.ChallengeProvider != nil {
-		// Enabling DNS Challenge disables the other challenges
-		certmagic.DefaultACME.DNSProvider = c.opts.ChallengeProvider
-	}
 	if c.opts.OnDemand {
 		certmagic.Default.OnDemand = new(certmagic.OnDemandConfig)
 	}
@@ -34,7 +30,7 @@ func (c *certmagicProvider) setup() {
 	// randomness so they don't collide
 	// RenewalWindowRatio [0.33 - 0.50)
 	rand.Seed(time.Now().UnixNano())
-	randomRatio := float64(rand.Intn(17) + 33) * 0.01
+	randomRatio := float64(rand.Intn(17)+33) * 0.01
 	certmagic.Default.RenewalWindowRatio = randomRatio
 }
 

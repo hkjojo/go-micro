@@ -103,7 +103,6 @@ func NewOptions(options ...Option) Options {
 		},
 		PoolSize: DefaultPoolSize,
 		// PoolTTL:   DefaultPoolTTL,
-		Auth:      auth.DefaultAuth,
 		Broker:    broker.DefaultBroker,
 		Selector:  selector.DefaultSelector,
 		Registry:  registry.DefaultRegistry,
