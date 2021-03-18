@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/micro/go-micro/v2/auth"
 	"github.com/micro/go-micro/v2/broker"
 	"github.com/micro/go-micro/v2/client/selector"
 	"github.com/micro/go-micro/v2/codec"
@@ -17,7 +16,6 @@ type Options struct {
 	ContentType string
 
 	// Plugged interfaces
-	Auth      auth.Auth
 	Broker    broker.Broker
 	Codecs    map[string]codec.NewCodec
 	Registry  registry.Registry
@@ -123,13 +121,6 @@ func NewOptions(options ...Option) Options {
 func Broker(b broker.Broker) Option {
 	return func(o *Options) {
 		o.Broker = b
-	}
-}
-
-// Auth to be used when making a request
-func Auth(a auth.Auth) Option {
-	return func(o *Options) {
-		o.Auth = a
 	}
 }
 
