@@ -16,7 +16,7 @@ var (
 
 // The registry provides an interface for service discovery
 // and an abstraction over varying implementations
-// {consul, etcd, zookeeper, ...}
+// {consul, zookeeper, ...}
 type Registry interface {
 	Init(...Option) error
 	Options() Options
